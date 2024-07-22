@@ -1,5 +1,6 @@
 import os
 import bs4
+import numpy as np
 import requests
 from bs4 import BeautifulSoup
 import json
@@ -80,9 +81,7 @@ def get_file_name_and_data(url):
 
 
 
-def download_all_games(season, month, path):
-    if path == "":
-        path = DATA_PATH
+def download_all_games(season, month='-', path=DATA_PATH):
     games_url = get_all_games_url(season,month=month)
     for url in games_url:
         pbp_url = get_game_id_url(url)
@@ -176,11 +175,13 @@ def get_player_stats_dic(player,files, path="./data/"):
         if played:
            count = count + 1
 
+    stat['points'] = stat['2pt'] * 2 + stat['3pt'] * 3 + stat['freeThrow']
+
     return stat, count
 
 def get_player_stats(dic,count):
     if count == 0:
-        return {}
+        return {'points':7,'def':5,'efc':8,'games_played':1}
     dict = {}
     dict['points'] = (dic['2pt'] * 2 + dic['3pt'] * 3 + dic['freeThrow']) / count
     dict['def'] = (dic['rebound'] + dic['block'] + dic['steal']) / count
@@ -211,11 +212,14 @@ def get_game_data(file, team, path=DATA_PATH):
         score2 = data['data']['fixture']['competitors'][1]['score']
         team1 = data['data']['fixture']['competitors'][0]['name']
         team2 = data['data']['fixture']['competitors'][1]['name']
-        if not team in team1:
+        if not team.lower() in team1.lower():
             score1, score2 = score2, score1
             home = not home
             team1, team2 = team2, team1
 
+    dict['winrate'] = get_team_winrate(file,team1,team2)
+    dict['average'] = get_average_team1_vs_team2(file,team1,team2)
+    dict['last_game'] = get_days_from_last_game(file,team1)
     team1 = get_short_team_name(team1)
     team2 = get_short_team_name(team2)
     if team1 == "" or team2 == "":
@@ -224,6 +228,7 @@ def get_game_data(file, team, path=DATA_PATH):
     dict['team1'] = team1
     dict['team2'] = team2
     dict['games_played'] = count
+    dict['date'] = extract_date(file)
     dict['score1'] = score1
     #dict['score2'] = score2
     dict['home'] = home
@@ -342,17 +347,17 @@ def filter_files(date_from):
     return files
 
 def build_pd_df():
-    files = filter_files("2023-09-15")
+    files = [f for f in os.listdir(DATA_PATH) if '_vs_' in f]
     df = pd.DataFrame()
     for file in files:
         team1, team2 = get_teams_from_file(file)
-        players1 = get_seven_best_players_from_game(file,team1)
-        players2 = get_seven_best_players_from_game(file,team2)
+        players1 = get_best_performing_players(file,team1,team2,6)
+        players2 = get_best_performing_players(file,team2,team1,6)
         row1 = build_pd_row(file,players1,players2,team1)
         row2 = build_pd_row(file,players2,players1,team2)
         df = pd.concat([df,row1,row2], ignore_index=True)
 
-    df.to_csv("C:/Users/gabsa/Documents/KrepsinisLKL/data_csv/data.csv")
+    df.to_csv("C:/Users/gabsa/Documents/KrepsinisLKL/data_csv/data_new.csv")
     return df
 
 
@@ -381,4 +386,149 @@ def build_df_validation():
 
     df.to_csv("./data_csv/validation.csv")
     return df
+
+####################################################################
+
+def get_player_for_game_by_team(data,entity_id):
+    players = []
+    for i in range(len(data)):
+        for play in data[i]:
+            if 'name' in play and play['name'] not in players and play['entityId'] == entity_id:
+                players.append(play['name'])
+    return players
+
+def get_scored_points(file, team):
+    with open(f"{DATA_PATH}{file}",'r') as f:
+        info = json.load(f)
+    competitors = info['data']['banner']['fixture']['competitors']
+    if team.lower() in competitors[0]['name'].lower():
+        return competitors[0]['score']
+    else:
+        return competitors[1]['score']
+
+def get_percentage_player_count(scores,percentage,score_to_reach):
+    count = 5
+    team = sorted(scores, reverse=True)
+    while sum(team[:count]) / score_to_reach < percentage:
+        count = count + 1
+    return count
+
+
+def get_all_team_names():
+    files = os.listdir(DATA_PATH)
+    teams = []
+    for f in files:
+        if '_vs_' in f:
+            team1, team2 = get_teams_from_file(f)
+            if team1 not in teams:
+                teams.append(team1)
+            if team2 not in teams:
+               teams.append(team2)
+    return teams
+def calculate_score_percent_players_count(percentage):
+    files = os.listdir(DATA_PATH)
+    hash = {key:(0,0) for key in get_all_team_names()}
+
+    for f in files:
+        if '_vs_' in f:
+            teams = get_teams_from_file(f)
+            score1 = get_scored_points(f,teams[0])
+            score2 = get_scored_points(f,teams[1])
+            entity_id1 = get_entity_id(f,teams[0])
+            entity_id2 = get_entity_id(f,teams[1])
+            data = get_pbp(f)
+            players1 = get_player_for_game_by_team(data, entity_id1)
+            players2 = get_player_for_game_by_team(data, entity_id2)
+
+            team1 = [get_player_stats_dic(p, [f])[0]['points'] for p in players1]
+            team2 = [get_player_stats_dic(p, [f])[0]['points'] for p in players2]
+
+            # need to see, how many players are responsible for percantage % points
+            count1 = get_percentage_player_count(team1,percentage,int(score1))
+            count2 = get_percentage_player_count(team2,percentage,int(score2))
+            hash[teams[0]] = (hash[teams[0]][0]+count1,hash[teams[0]][1]+1)
+            hash[teams[1]] = (hash[teams[1]][0]+count2,hash[teams[1]][1]+1)
+    #changed team name
+    hash['Wolves'] = (hash['Wolves'][0] + hash['Wolves Twinsbet'][0],hash['Wolves'][1] + hash['Wolves Twinsbet'][1])
+    return hash
+
+def get_team_winrate(file,team1,team2):
+    ratio = 0
+    date = extract_date(file)
+    files = [file for file in os.listdir(DATA_PATH) if team1 in file and team2 in file and extract_date(file) < date]
+    for file in files:
+        with open(f"{DATA_PATH}{file}",'r') as f:
+            competitors = json.load(f)['data']['banner']['fixture']['competitors']
+
+        if competitors[0]['score'] < competitors[1]['score']:
+            if team1 in competitors[0]['name']:
+                ratio -= 1
+            else:
+                ratio += 1
+        else:
+            if team1 in competitors[0]['name']:
+                ratio += 1
+            else:
+                ratio -= 1
+    return ratio
+
+def get_days_from_last_game(file,team):
+    date = extract_date(file)
+    files = [f for f in os.listdir(DATA_PATH) if team in f and extract_date(f) < date]
+    if len(files) == 0:
+        return 10
+    files = sorted(files,key=lambda x:extract_date(x), reverse=True)
+    played_before = extract_date(files[0])
+    return date - played_before
+
+def get_entity_id(file,team):
+    with open(f"{DATA_PATH}{file}","r") as f:
+        competitors = json.load(f)["data"]["banner"]["fixture"]["competitors"]
+    if team in competitors[0]["name"]:
+        return competitors[0]["entityId"]
+    else:
+        return competitors[1]["entityId"]
+
+
+def get_best_performing_players(file,team1,team2,player_count):
+    date = extract_date(file)
+    files = [f for f in os.listdir(DATA_PATH) if team1 in f and team2 in f and extract_date(f) < date]
+    files = sorted(files,key=lambda x : extract_date(x),reverse=True)
+    if len(files) == 0:
+        players = [(str(i),{'points':7,'def':5,'efc':8}) for i in range(player_count)]
+        return players
+
+    player_stats = {}
+    players1 = []
+
+    # 3 last games are most relevant
+    count = len(files) if len(files) < 4 else 4
+    for i in range(count):
+        file = files[i]
+        entity_id1 = get_entity_id(file,team1)
+        pbp = get_pbp(file)
+        players1.extend([p for p in get_player_for_game_by_team(pbp,entity_id1) if p not in players1])
+
+    for player in players1:
+        stat,count = get_player_stats_dic(player,files[:count])
+        player_stats[player] = get_player_stats(stat,count)
+
+
+    best = sorted(player_stats.items(), key=lambda item:item[1]['points'] + item[1]['def'] + item[1]['efc'], reverse=True)[:player_count]
+
+    return best
+
+def get_average_team1_vs_team2(file,team1,team2):
+    date = extract_date(file)
+    files = [f for f in os.listdir(DATA_PATH) if team1 in f and team2 in f and extract_date(f) < date]
+    files = sorted(files, key=lambda x:extract_date(x), reverse=True)[:5]
+    scores = [int(get_scored_points(f,team1)) for f in files]
+    return np.average(scores) if len(scores) > 0 else 70
+
+
+
+
+
+
+
 

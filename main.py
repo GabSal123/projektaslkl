@@ -1,9 +1,11 @@
+import numpy as np
+import matplotlib.pyplot as plt
 import Tools as T
 import datetime
 import pandas as pd
 from sklearn.preprocessing import OneHotEncoder
 from sklearn import ensemble
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import GridSearchCV
 import Ekspermentas as E
 from sklearn.preprocessing import StandardScaler
@@ -11,7 +13,124 @@ from joblib import load,dump
 
 
 season = T.SEZONAI['2023-2024']
-# T.download_all_games(season)
+#T.download_all_games(season)
+
+
+df = pd.read_csv("./data_csv/data_new.csv")
+df = df[df.columns[1:]]
+
+df = df.sort_values('date')
+
+df = df.dropna(subset=['team1','team2'])
+df['last_game'] = df['last_game'].str.extract(r'(\d+)').astype(int)
+train = df[:700].copy()
+test = df[700:].copy()
+
+train.reset_index(drop=True, inplace=True)
+test.reset_index(drop=True, inplace=True)
+
+
+
+uniq_teams = pd.concat([train['team1'],train['team2'],test['team1'],test['team2']]).unique().reshape(-1,1)
+
+encoder = OneHotEncoder(sparse_output=False)
+
+encoder.fit(uniq_teams)
+
+print(encoder.categories_)
+
+
+def encode_teams(dataframe,encoder):
+    team1 = pd.DataFrame(data = encoder.transform(dataframe['team1'].values.reshape(-1,1)))
+    team2 = pd.DataFrame(data= encoder.transform(dataframe['team2'].values.reshape(-1,1)))
+    team_names = encoder.categories_
+    team1_col_names = ['team1_' + name for name in team_names]
+    team2_col_names = ['team2_' + name for name in team_names]
+    team1.columns = team1_col_names
+    team2.columns = team2_col_names
+    dataframe = pd.concat([dataframe,team1,team2], axis=1)
+    return dataframe
+
+train = encode_teams(train,encoder)
+test = encode_teams(test,encoder)
+
+
+
+train_scores = train.pop('score1')
+test_scores = test.pop('score1')
+
+train = train.drop(['team1','team2','date'],axis=1)
+test = test.drop(['team1','team2','date'],axis=1)
+
+train.columns = train.columns.astype(str)
+test.columns = test.columns.astype(str)
+
+scaler = StandardScaler()
+
+print(train.columns)
+
+columns_to_scale = ['winrate', 'average', 'last_game', 'games_played', 'p10', 'd10',
+       'e10', 'p11', 'd11', 'e11', 'p12', 'd12', 'e12', 'p13', 'd13', 'e13',
+       'p14', 'd14', 'e14', 'p15', 'd15', 'e15', 'p20', 'd20', 'e20', 'p21',
+       'd21', 'e21', 'p22', 'd22', 'e22', 'p23', 'd23', 'e23', 'p24', 'd24',
+       'e24', 'p25', 'd25', 'e25']
+
+
+scaler.fit(train[columns_to_scale])
+
+train_scaled = train.copy()
+test_scaled = test.copy()
+
+train_scaled[columns_to_scale] = scaler.transform(train[columns_to_scale])
+test_scaled[columns_to_scale] = scaler.transform(test[columns_to_scale])
+
+
+
+params = {
+    "n_estimators": 500,
+    "max_depth": 4,
+    "min_samples_split": 5,
+    "learning_rate": 0.01,
+    "loss": "squared_error",
+}
+reg = ensemble.GradientBoostingRegressor(**params)
+reg_s = ensemble.GradientBoostingRegressor(**params)
+rf = ensemble.RandomForestRegressor()
+rf_s = ensemble.RandomForestRegressor()
+
+reg.fit(train,train_scores)
+rf.fit(train,train_scores)
+
+reg_s.fit(train_scaled,train_scores)
+rf_s.fit(train_scaled,train_scores)
+
+
+
+preds_reg_s = reg_s.predict(test_scaled)
+preds_rf_s = rf_s.predict(test_scaled)
+
+preds_reg = reg.predict(test)
+preds_rf = rf.predict(test)
+
+print(f"xg mse {mean_squared_error(test_scores,preds_reg)}")
+print(f"xg r2 {r2_score(test_scores,preds_reg)}")
+print(f"xg scaled mse {mean_squared_error(test_scores,preds_reg_s)}")
+print(f"xg scaled r2 {r2_score(test_scores,preds_reg_s)}")
+
+print(f"rf mse {mean_squared_error(test_scores,preds_rf)}")
+print(f"rf r2 {r2_score(test_scores,preds_rf)}")
+print(f"rf scaled mse {mean_squared_error(test_scores,preds_rf_s)}")
+print(f"rf scaled r2 {r2_score(test_scores,preds_rf_s)}")
+
+print(rf_s.feature_importances_)
+
+
+
+
+
+
+
+
 
 
 # season = T.SEZONAI['2022-2023']
@@ -33,217 +152,12 @@ season = T.SEZONAI['2023-2024']
 
 #latest_zalgiris_game = T.find_newest_game("Žalgiris")
 
+#hasukas = T.calculate_score_percent_players_count(0.8)
 
-full_df = pd.read_csv("./data_csv/all_season_data.csv")
-full_df = full_df.dropna(subset=['team1','team2'])
+#averages = [tup[0]/tup[1] for key,tup in hasukas.items()]
 
-train_df = full_df[:600]
-test_df = full_df[600:]
-
-
-df = pd.read_csv("./data_csv/data.csv")
-val = pd.read_csv("./data_csv/validation.csv")
-
-scaler = StandardScaler()
-
-unique_teams = pd.concat([train_df['team1'],train_df['team2']]).unique().reshape(-1,1)
-
-
-encoder = OneHotEncoder(categories=[T.TEAMS, T.TEAMS], sparse_output=False)
-dummy_df = pd.DataFrame({'team1': T.TEAMS, 'team2': T.TEAMS})
-encoder.fit(dummy_df)
-
-def encode_teams(df, encoder):
-    encoded = encoder.transform(df[['team1', 'team2']])
-
-    # Convert to DataFrame
-    column_names = encoder.get_feature_names_out(['team1', 'team2'])
-    encoded_df = pd.DataFrame(encoded, columns=column_names)
-
-    return encoded_df
-
-
-team_encoded_df = encode_teams(df,encoder)
-
-val_encoded_df = encode_teams(val,encoder)
-
-train_team_df = encode_teams(train_df,encoder)
-
-test_team_df = encode_teams(test_df,encoder)
-
-
-
-df = pd.concat([df,team_encoded_df], axis=1)
-
-val = pd.concat([val,val_encoded_df], axis=1)
-
-train_df.reset_index(drop=True, inplace=True)
-train_df = pd.concat([train_df,train_team_df],axis=1)
-
-test_df.reset_index(drop=True, inplace=True)
-test_df = pd.concat([test_df,test_team_df], axis=1)
-
-
-
-df = df.drop(['team1','team2',df.columns[0]], axis=1)
-val = val.drop(['team1','team2',val.columns[0]], axis=1)
-train_df = train_df.drop(['team1','team2','date',train_df.columns[0]], axis=1)
-test_df = test_df.drop(['team1','team2','date',test_df.columns[0]], axis=1)
-
-
-
-
-
-
-
-scores = df.pop('score1')
-
-val_scores = val.pop('score1')
-
-train_scores = train_df.pop('score1')
-
-test_scores = test_df.pop('score1')
-
-df = df.fillna(0)
-val = val.fillna(0)
-train_df = train_df.fillna(0)
-test_df = test_df.fillna(0)
-
-scaled = train_df.copy()
-
-scaled[['p10', 'd10', 'e10', 'p11', 'd11', 'e11', 'p12',
-       'd12', 'e12', 'p13', 'd13', 'e13', 'p14', 'd14', 'e14', 'p15', 'd15',
-       'e15', 'p16', 'd16', 'e16', 'p20', 'd20', 'e20', 'p21', 'd21', 'e21',
-       'p22', 'd22', 'e22', 'p23', 'd23', 'e23', 'p24', 'd24', 'e24', 'p25',
-       'd25', 'e25', 'p26', 'd26', 'e26']] = scaler.fit_transform(scaled[['p10', 'd10', 'e10', 'p11', 'd11', 'e11', 'p12',
-       'd12', 'e12', 'p13', 'd13', 'e13', 'p14', 'd14', 'e14', 'p15', 'd15',
-       'e15', 'p16', 'd16', 'e16', 'p20', 'd20', 'e20', 'p21', 'd21', 'e21',
-       'p22', 'd22', 'e22', 'p23', 'd23', 'e23', 'p24', 'd24', 'e24', 'p25',
-       'd25', 'e25', 'p26', 'd26', 'e26']])
-
-
-scaled_l = df.copy()
-
-scaled_l[['p10', 'd10', 'e10', 'p11', 'd11', 'e11', 'p12',
-       'd12', 'e12', 'p13', 'd13', 'e13', 'p14', 'd14', 'e14', 'p15', 'd15',
-       'e15', 'p16', 'd16', 'e16', 'p20', 'd20', 'e20', 'p21', 'd21', 'e21',
-       'p22', 'd22', 'e22', 'p23', 'd23', 'e23', 'p24', 'd24', 'e24', 'p25',
-       'd25', 'e25', 'p26', 'd26', 'e26']] = scaler.fit_transform(scaled_l[['p10', 'd10', 'e10', 'p11', 'd11', 'e11', 'p12',
-       'd12', 'e12', 'p13', 'd13', 'e13', 'p14', 'd14', 'e14', 'p15', 'd15',
-       'e15', 'p16', 'd16', 'e16', 'p20', 'd20', 'e20', 'p21', 'd21', 'e21',
-       'p22', 'd22', 'e22', 'p23', 'd23', 'e23', 'p24', 'd24', 'e24', 'p25',
-       'd25', 'e25', 'p26', 'd26', 'e26']])
-
-
-params2 = {
-    "n_estimators": 500,
-    "max_depth": 4,
-    "min_samples_split": 5,
-    "learning_rate": 0.01,
-    "loss": "squared_error",
-}
-
-params = {
-    "n_estimators": 100,
-    "max_depth": 3,
-    "min_samples_split": 5,
-    "learning_rate": 0.05,
-    "loss": "squared_error",
-}
-
-reg_l = ensemble.GradientBoostingRegressor(**params2)
-reg_b = ensemble.GradientBoostingRegressor(**params2)
-
-reg_b_s = ensemble.GradientBoostingRegressor(**params2)
-
-reg_l_s = ensemble.GradientBoostingRegressor(**params2)
-
-reg_l.fit(df,scores)
-reg_b.fit(train_df,train_scores)
-
-reg_b_s.fit(scaled,train_scores)
-
-reg_l_s.fit(scaled_l, scores)
-
-
-
-
-rf_l = ensemble.RandomForestRegressor(n_jobs=-1)
-rf_b = ensemble.RandomForestRegressor(n_jobs=-1)
-
-rf_b_s = ensemble.RandomForestRegressor(n_jobs=-1)
-
-rf_l_s = ensemble.RandomForestRegressor(n_jobs=-1)
-
-rf_b.fit(train_df,train_scores)
-rf_l.fit(df,scores)
-
-rf_b_s.fit(scaled,train_scores)
-
-rf_l_s.fit(scaled_l,scores)
-
-
-preds_reg_l = reg_l.predict(val)
-preds_reg_b = reg_b.predict(val)
-preds_rf_l = rf_l.predict(val)
-preds_rf_b = rf_b.predict(val)
-
-preds_reg_b_s = reg_b_s.predict(val)
-preds_rf_b_s = rf_b_s.predict(val)
-preds_big_rf = rf_b_s.predict(test_df)
-
-
-preds_rf_l_s = rf_l_s.predict(val)
-preds_reg_l_s = reg_l_s.predict(val)
-
-mse_big_rf_s = mean_squared_error(test_scores,preds_big_rf)
-
-mse_reg_l = mean_squared_error(val_scores, preds_reg_l)
-mse_reg_b = mean_squared_error(val_scores,preds_reg_b)
-
-mse_rf_l = mean_squared_error(val_scores,preds_rf_l)
-mse_rf_b = mean_squared_error(val_scores,preds_rf_b)
-
-mse_reg_b_s = mean_squared_error(val_scores,preds_reg_b_s)
-mse_rf_b_s = mean_squared_error(val_scores,preds_rf_b_s)
-
-
-mse_reg_l_s = mean_squared_error(val_scores,preds_reg_l_s)
-
-mse_rf_l_s = mean_squared_error(val_scores,preds_rf_l_s)
-
-print("reg sio sezono", mse_reg_l)
-print("reg abieju sezonu", mse_reg_b)
-
-print("rf sio sezono", mse_rf_l)
-print("rf abieju sezonu", mse_rf_b)
-
-print("reg abieju sezonu scaled", mse_reg_b_s)
-print("rf abieju sezonu scaled", mse_rf_b_s)
-
-
-print("rf abieju sezonu scaled (testuojama ant daug duomenu)", mse_big_rf_s)
-
-print(" rf sio sezono scaled", mse_rf_l_s)
-print("reg sio sezono scaled", mse_reg_l_s)
-
-print("reg sio sezono preds", preds_reg_l)
-print("reg abieju sezonu preds", preds_reg_b)
-print("rf sio sezono preds", preds_rf_l)
-print("rf abieju sezonu preds", preds_rf_b)
-print("reg abieju sezonu scaled preds", preds_reg_b_s)
-print("rf abieju sezonu scaled preds", preds_rf_b_s)
-
-
-
-
-print("reg sio sezono scaled preds", preds_reg_l_s)
-print("rf sio sezono scaled preds", preds_rf_l_s)
-
-print("tikri\n",val_scores )
-
-#dump(reg_l_s, "./reg_scaled.aaa")
-
-
-
+#average = sum(averages)/len(averages)
+#print(average)
+#5.75 = 80%
+#6.9 = 90%
 
